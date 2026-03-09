@@ -5,6 +5,7 @@ import com.codekokeshi.kokefinanceapp.model.Tag
 import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
+import com.codekokeshi.kokefinanceapp.model.WalletKind
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -52,6 +53,8 @@ class FinanceRepository(context: Context) {
                 put("id", w.id)
                 put("name", w.name)
                 put("initialBalance", w.initialBalance)
+                put("isHidden", w.isHidden)
+                put("kind", w.kind.name)
                 put("createdAt", w.createdAt)
             })
         }
@@ -68,6 +71,9 @@ class FinanceRepository(context: Context) {
                     id = obj.getString("id"),
                     name = obj.getString("name"),
                     initialBalance = obj.getDouble("initialBalance"),
+                    isHidden = obj.optBoolean("isHidden", false),
+                    kind = obj.optString("kind", WalletKind.STANDARD.name)
+                        .let { value -> WalletKind.entries.firstOrNull { it.name == value } ?: WalletKind.STANDARD },
                     createdAt = obj.getLong("createdAt")
                 )
             }

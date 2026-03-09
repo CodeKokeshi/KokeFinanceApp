@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,7 +24,9 @@ import androidx.compose.ui.unit.dp
 import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
+import com.codekokeshi.kokefinanceapp.model.WalletKind
 import com.codekokeshi.kokefinanceapp.model.computeBalance
+import com.codekokeshi.kokefinanceapp.model.isAutoIncludedInTotals
 import com.codekokeshi.kokefinanceapp.model.totalBalance
 import com.codekokeshi.kokefinanceapp.ui.components.AppScreenBackground
 import com.codekokeshi.kokefinanceapp.ui.components.EmptyStateCard
@@ -41,7 +44,13 @@ fun HomeScreen(
     wallets: List<Wallet>,
     transactions: List<Transaction>,
     onNavigateToTransactions: () -> Unit,
+    onNavigateToDebts: () -> Unit,
 ) {
+    val autoWallets = remember(wallets) { wallets.filter { it.isAutoIncludedInTotals() } }
+    val hiddenWallets = remember(wallets) { wallets.filterNot { it.isAutoIncludedInTotals() } }
+    val debtWallets = remember(wallets) { wallets.filter { it.kind == WalletKind.DEBT } }
+    val hiddenStandardWallets = remember(wallets) { wallets.filter { it.kind == WalletKind.STANDARD && it.isHidden } }
+
     val totalBalance = remember(wallets, transactions) {
         wallets.totalBalance(transactions)
     }
@@ -79,8 +88,8 @@ fun HomeScreen(
         transactions.sortedByDescending { it.timestamp }.take(5)
     }
 
-    val topWallets = remember(wallets, transactions) {
-        wallets.map { it to it.computeBalance(transactions) }
+    val topWallets = remember(autoWallets, transactions) {
+        autoWallets.map { it to it.computeBalance(transactions) }
             .sortedByDescending { it.second }
             .take(3)
     }
@@ -137,15 +146,28 @@ fun HomeScreen(
                         )
                         Text(
                             text = when {
-                                wallets.isEmpty() -> "No wallets yet. Create one to start tracking."
-                                wallets.size == 1 -> "1 wallet active"
-                                else -> "${wallets.size} wallets active"
+                                autoWallets.isEmpty() && hiddenWallets.isEmpty() -> "No wallets yet. Create one to start tracking."
+                                hiddenWallets.isEmpty() && autoWallets.size == 1 -> "1 wallet in automatic totals"
+                                hiddenWallets.isEmpty() -> "${autoWallets.size} wallets in automatic totals"
+                                autoWallets.isEmpty() -> "${hiddenWallets.size} hidden or debt wallet${if (hiddenWallets.size == 1) "" else "s"} kept out of totals"
+                                else -> "${autoWallets.size} visible wallet${if (autoWallets.size == 1) "" else "s"}, ${hiddenWallets.size} hidden or debt"
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        OutlinedButton(onClick = onNavigateToTransactions) {
-                            Text("Open transactions")
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlinedButton(
+                                onClick = onNavigateToTransactions,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Transactions")
+                            }
+                            OutlinedButton(
+                                onClick = onNavigateToDebts,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Debt desk")
+                            }
                         }
                     }
                 }
@@ -181,7 +203,7 @@ fun HomeScreen(
             item(key = "walletHeader") {
                 SectionHeader(
                     title = "Wallet snapshot",
-                    caption = if (wallets.isEmpty()) "No active wallets yet." else "A compact look at your strongest wallets."
+                    caption = if (autoWallets.isEmpty()) "Hidden and debt wallets stay out of this summary." else "A compact look at the wallets included in your automatic total."
                 )
             }
 
@@ -219,6 +241,88 @@ fun HomeScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                    }
+                }
+            }
+
+            item(key = "offBookHeader") {
+                SectionHeader(
+                    title = "Off-book wallets",
+                    caption = if (hiddenWallets.isEmpty()) {
+                        "No hidden or debt wallets yet."
+                    } else {
+                        "Tracked separately so your main total stays honest."
+                    }
+                )
+            }
+
+            if (hiddenWallets.isEmpty()) {
+                item(key = "offBookEmpty") {
+                    EmptyStateCard(
+                        title = "Nothing off-book yet",
+                        subtitle = "Hide locked funds or create debt wallets from Transactions when you want them visible but excluded from the total balance."
+                    )
+                }
+            } else {
+                item(key = "offBookStats") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        StatCard(
+                            label = "Debt wallets",
+                            amount = debtWallets.size.toDouble(),
+                            color = ExpenseColor,
+                            valueText = debtWallets.size.toString(),
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatCard(
+                            label = "Hidden funds",
+                            amount = hiddenStandardWallets.size.toDouble(),
+                            color = MaterialTheme.colorScheme.secondary,
+                            valueText = hiddenStandardWallets.size.toString(),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                items(hiddenWallets.take(3), key = { it.id }) { wallet ->
+                    val balance = remember(wallet, transactions) { wallet.computeBalance(transactions) }
+                    SectionCard {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = wallet.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = if (wallet.kind == WalletKind.DEBT) {
+                                        "Debt wallet kept out of automatic totals"
+                                    } else {
+                                        "Hidden wallet kept out of automatic totals"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text(
+                                text = com.codekokeshi.kokefinanceapp.ui.components.formatPeso(balance),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                item(key = "offBookAction") {
+                    OutlinedButton(onClick = onNavigateToDebts) {
+                        Text("Open debt and hidden wallet view")
                     }
                 }
             }

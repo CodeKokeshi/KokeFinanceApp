@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.ReceiptLong
@@ -28,6 +29,7 @@ import com.codekokeshi.kokefinanceapp.model.Tag
 import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
+import com.codekokeshi.kokefinanceapp.ui.screens.DebtScreen
 import com.codekokeshi.kokefinanceapp.ui.screens.HomeScreen
 import com.codekokeshi.kokefinanceapp.ui.screens.ReportsScreen
 import com.codekokeshi.kokefinanceapp.ui.screens.TransactionsScreen
@@ -50,6 +52,7 @@ enum class AppDestinations(
     val icon: ImageVector,
 ) {
     HOME("Home", Icons.Default.Home),
+    DEBTS("Debts", Icons.Default.AccountBalanceWallet),
     TRANSACTIONS("Transactions", Icons.Default.ReceiptLong),
     REPORTS("Reports", Icons.Default.BarChart),
 }
@@ -94,6 +97,17 @@ fun KokeFinanceApp() {
                         transactions = transactions,
                         onNavigateToTransactions = {
                             currentDestination = AppDestinations.TRANSACTIONS
+                        },
+                        onNavigateToDebts = {
+                            currentDestination = AppDestinations.DEBTS
+                        }
+                    )
+
+                    AppDestinations.DEBTS -> DebtScreen(
+                        wallets = wallets,
+                        transactions = transactions,
+                        onNavigateToTransactions = {
+                            currentDestination = AppDestinations.TRANSACTIONS
                         }
                     )
 
@@ -101,8 +115,8 @@ fun KokeFinanceApp() {
                         wallets = wallets,
                         tags = tags,
                         transactions = transactions,
-                        onCreateWallet = { name, initialBalance ->
-                            wallets = wallets + Wallet(name = name, initialBalance = initialBalance)
+                        onCreateWallet = { wallet ->
+                            wallets = wallets + wallet
                             persist()
                         },
                         onCreateTag = { name, emoji, type ->

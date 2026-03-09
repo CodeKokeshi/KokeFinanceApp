@@ -5,10 +5,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,6 +26,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,12 +34,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -49,7 +46,9 @@ import com.codekokeshi.kokefinanceapp.model.Tag
 import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
+import com.codekokeshi.kokefinanceapp.model.WalletKind
 import com.codekokeshi.kokefinanceapp.model.computeBalance
+import com.codekokeshi.kokefinanceapp.model.isAutoIncludedInTotals
 import com.codekokeshi.kokefinanceapp.ui.components.AppScreenBackground
 import com.codekokeshi.kokefinanceapp.ui.components.EmptyStateCard
 import com.codekokeshi.kokefinanceapp.ui.components.ExpenseColor
@@ -65,13 +64,14 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
 @Composable
 fun TransactionsScreen(
     wallets: List<Wallet>,
     tags: List<Tag>,
     transactions: List<Transaction>,
-    onCreateWallet: (name: String, initialBalance: Double) -> Unit,
+    onCreateWallet: (Wallet) -> Unit,
     onCreateTag: (name: String, emoji: String, type: TransactionType) -> Tag,
     onEditWallet: (Wallet) -> Unit,
     onDeleteWallet: (Wallet) -> Unit,
@@ -80,10 +80,39 @@ fun TransactionsScreen(
 ) {
     var selectedWalletId by rememberSaveable { mutableStateOf(wallets.firstOrNull()?.id ?: "") }
     var selectedTagId by rememberSaveable { mutableStateOf("") }
+    var comparisonWalletId by rememberSaveable { mutableStateOf("") }
+    var comparisonSourceWalletIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var comparisonInitialized by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(wallets) {
         if (wallets.none { it.id == selectedWalletId }) {
             selectedWalletId = wallets.firstOrNull()?.id ?: ""
+        }
+
+        val comparisonDefault = wallets.firstOrNull { it.kind == WalletKind.DEBT }?.id
+            ?: wallets.firstOrNull { it.isHidden }?.id
+            ?: wallets.firstOrNull()?.id
+
+        if (!comparisonInitialized && wallets.isNotEmpty()) {
+            comparisonWalletId = comparisonDefault.orEmpty()
+            comparisonSourceWalletIds = wallets
+                .filter { it.kind == WalletKind.STANDARD && !it.isHidden && it.id != comparisonWalletId }
+                .map { it.id }
+            comparisonInitialized = true
+        } else {
+            if (wallets.none { it.id == comparisonWalletId }) {
+                comparisonWalletId = comparisonDefault.orEmpty()
+            }
+            comparisonSourceWalletIds = comparisonSourceWalletIds.filter { sourceId ->
+                wallets.any { it.id == sourceId && it.kind == WalletKind.STANDARD && !it.isHidden } &&
+                    sourceId != comparisonWalletId
+            }
+        }
+    }
+
+    LaunchedEffect(comparisonWalletId) {
+        if (comparisonWalletId.isNotEmpty() && comparisonSourceWalletIds.contains(comparisonWalletId)) {
+            comparisonSourceWalletIds = comparisonSourceWalletIds.filterNot { it == comparisonWalletId }
         }
     }
 
@@ -100,16 +129,23 @@ fun TransactionsScreen(
     var formMessage by rememberSaveable { mutableStateOf("") }
 
     val selectedWallet = wallets.find { it.id == selectedWalletId }
+    val selectedWalletIsDebt = selectedWallet?.kind == WalletKind.DEBT
     val walletBalance = remember(selectedWallet, transactions) {
         selectedWallet?.computeBalance(transactions) ?: 0.0
     }
 
-    val typeTags = remember(tags, transactionType) {
-        tags.filter { it.type == transactionType }.sortedBy { it.name.lowercase() }
+    val typeTags = remember(tags, transactionType, selectedWalletIsDebt) {
+        if (selectedWalletIsDebt) {
+            emptyList()
+        } else {
+            tags.filter { it.type == transactionType }.sortedBy { it.name.lowercase() }
+        }
     }
 
-    LaunchedEffect(typeTags) {
-        if (typeTags.none { it.id == selectedTagId }) {
+    LaunchedEffect(typeTags, selectedWalletIsDebt) {
+        if (selectedWalletIsDebt) {
+            selectedTagId = ""
+        } else if (typeTags.none { it.id == selectedTagId }) {
             selectedTagId = typeTags.firstOrNull()?.id ?: ""
         }
     }
@@ -142,6 +178,9 @@ fun TransactionsScreen(
         }
     }
 
+    val walletTypePositiveLabel = if (selectedWalletIsDebt) "Paid" else "Income"
+    val walletTypeNegativeLabel = if (selectedWalletIsDebt) "Unpaid" else "Expense"
+
     AppScreenBackground {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
@@ -167,7 +206,7 @@ fun TransactionsScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Manage wallets, build your own emoji tags, and keep the ledger tidy.",
+                        text = "Manage wallets, hide balances from auto totals, and preview what debt would subtract from spendable money.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -177,7 +216,7 @@ fun TransactionsScreen(
             item(key = "walletHeader") {
                 SectionHeader(
                     title = "Wallets",
-                    caption = if (wallets.isEmpty()) "Start with a wallet." else "Choose the wallet you want to work in."
+                    caption = if (wallets.isEmpty()) "Start with a wallet." else "Select a wallet, then manage its balance and options."
                 )
             }
 
@@ -189,7 +228,7 @@ fun TransactionsScreen(
                         FilterChip(
                             selected = isSelected,
                             onClick = { selectedWalletId = wallet.id },
-                            label = { Text("${wallet.name}  ${formatPeso(balance)}") },
+                            label = { Text(walletChipLabel(wallet, balance)) },
                             leadingIcon = if (isSelected) {
                                 { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
                             } else null
@@ -210,9 +249,15 @@ fun TransactionsScreen(
                     WalletBalanceCard(
                         title = selectedWallet.name,
                         balance = walletBalance,
-                        subtitle = "Tap to edit the wallet name, opening balance, or delete it.",
+                        subtitle = walletSubtitle(selectedWallet),
                         modifier = Modifier.clickable { showEditWalletDialog = true }
                     )
+                }
+
+                item(key = "walletActions") {
+                    OutlinedButton(onClick = { showEditWalletDialog = true }) {
+                        Text("Manage selected wallet")
+                    }
                 }
 
                 item(key = "walletStats") {
@@ -221,15 +266,19 @@ fun TransactionsScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         StatCard(
-                            label = "Opening",
+                            label = if (selectedWallet.kind == WalletKind.DEBT) "Starting debt" else "Opening",
                             amount = selectedWallet.initialBalance,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.weight(1f)
                         )
                         StatCard(
-                            label = "Current",
+                            label = if (selectedWallet.kind == WalletKind.DEBT) "Remaining" else "Current",
                             amount = walletBalance,
-                            color = if (walletBalance >= selectedWallet.initialBalance) IncomeColor else ExpenseColor,
+                            color = when {
+                                selectedWallet.kind == WalletKind.DEBT -> ExpenseColor
+                                walletBalance >= selectedWallet.initialBalance -> IncomeColor
+                                else -> ExpenseColor
+                            },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -243,11 +292,39 @@ fun TransactionsScreen(
                 }
             }
 
+            item(key = "comparisonHeader") {
+                SectionHeader(
+                    title = "Wallet comparison",
+                    caption = "Pick the wallets you count as available, then subtract one wallet from them. Hidden debt wallets fit here well."
+                )
+            }
+
+            item(key = "comparisonCard") {
+                WalletComparisonCard(
+                    wallets = wallets,
+                    transactions = transactions,
+                    comparisonWalletId = comparisonWalletId,
+                    comparisonSourceWalletIds = comparisonSourceWalletIds,
+                    onComparisonWalletSelected = { comparisonWalletId = it },
+                    onToggleComparisonSourceWallet = { walletId ->
+                        comparisonSourceWalletIds = if (comparisonSourceWalletIds.contains(walletId)) {
+                            comparisonSourceWalletIds.filterNot { it == walletId }
+                        } else {
+                            comparisonSourceWalletIds + walletId
+                        }
+                    }
+                )
+            }
+
             if (wallets.isNotEmpty()) {
                 item(key = "recordHeader") {
                     SectionHeader(
-                        title = "Record transaction",
-                        caption = "Direction, amount, tag, then note. Keep it quick."
+                        title = if (selectedWalletIsDebt) "Update debt wallet" else "Record transaction",
+                        caption = if (selectedWalletIsDebt) {
+                            "Paid lowers the remaining debt. Unpaid raises it."
+                        } else {
+                            "Direction, amount, tag, then note. Keep it quick."
+                        }
                     )
                 }
 
@@ -264,7 +341,7 @@ fun TransactionsScreen(
                                 FilterChip(
                                     selected = transactionType == TransactionType.INCOME,
                                     onClick = { transactionType = TransactionType.INCOME },
-                                    label = { Text("Income") },
+                                    label = { Text(walletTypePositiveLabel) },
                                     leadingIcon = if (transactionType == TransactionType.INCOME) {
                                         { Icon(Icons.Default.TrendingUp, contentDescription = null, modifier = Modifier.size(18.dp)) }
                                     } else null,
@@ -273,7 +350,7 @@ fun TransactionsScreen(
                                 FilterChip(
                                     selected = transactionType == TransactionType.EXPENSE,
                                     onClick = { transactionType = TransactionType.EXPENSE },
-                                    label = { Text("Expense") },
+                                    label = { Text(walletTypeNegativeLabel) },
                                     leadingIcon = if (transactionType == TransactionType.EXPENSE) {
                                         { Icon(Icons.Default.TrendingDown, contentDescription = null, modifier = Modifier.size(18.dp)) }
                                     } else null,
@@ -294,44 +371,79 @@ fun TransactionsScreen(
                                 singleLine = true,
                             )
 
-                            SectionHeader(
-                                title = "Tags",
-                                caption = if (typeTags.isEmpty()) {
-                                    "Create your first ${transactionType.label.lowercase()} tag."
-                                } else {
-                                    "These are your custom tags for this transaction type."
-                                }
-                            )
-
-                            if (typeTags.isEmpty()) {
-                                EmptyStateCard(
-                                    title = "No ${transactionType.label.lowercase()} tags yet",
-                                    subtitle = "Make your own, choose your own emoji, and stop depending on preset labels."
-                                )
-                            } else {
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    items(typeTags, key = { it.id }) { tag ->
-                                        FilterChip(
-                                            selected = tag.id == selectedTagId,
-                                            onClick = { selectedTagId = tag.id },
-                                            label = { Text("${tag.emoji} ${tag.name}") }
+                            if (selectedWalletIsDebt) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Debt state",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text(
+                                            text = if (transactionType == TransactionType.INCOME) {
+                                                "This entry will be saved as Paid and reduce the remaining debt."
+                                            } else {
+                                                "This entry will be saved as Unpaid and increase the remaining debt."
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                 }
-                            }
+                            } else {
+                                SectionHeader(
+                                    title = "Tags",
+                                    caption = if (typeTags.isEmpty()) {
+                                        "Create your first ${transactionType.label.lowercase()} tag."
+                                    } else {
+                                        "These are your custom tags for this transaction type."
+                                    }
+                                )
 
-                            AssistChip(
-                                onClick = { showCreateTagDialog = true },
-                                label = { Text("Create custom tag") },
-                                leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp)) }
-                            )
+                                if (typeTags.isEmpty()) {
+                                    EmptyStateCard(
+                                        title = "No ${transactionType.label.lowercase()} tags yet",
+                                        subtitle = "Make your own, choose your own emoji, and stop depending on preset labels."
+                                    )
+                                } else {
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        items(typeTags, key = { it.id }) { tag ->
+                                            FilterChip(
+                                                selected = tag.id == selectedTagId,
+                                                onClick = { selectedTagId = tag.id },
+                                                label = { Text("${tag.emoji} ${tag.name}") }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                AssistChip(
+                                    onClick = { showCreateTagDialog = true },
+                                    label = { Text("Create custom tag") },
+                                    leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                                )
+                            }
 
                             OutlinedTextField(
                                 value = note,
                                 onValueChange = { note = it },
                                 modifier = Modifier.fillMaxWidth(),
                                 label = { Text("Note") },
-                                supportingText = { Text("Optional context for this entry.") },
+                                supportingText = {
+                                    Text(
+                                        if (selectedWalletIsDebt) {
+                                            "Optional note for this payment or unpaid amount."
+                                        } else {
+                                            "Optional context for this entry."
+                                        }
+                                    )
+                                },
                                 singleLine = true,
                             )
 
@@ -339,7 +451,10 @@ fun TransactionsScreen(
                                 text = buildString {
                                     append("Wallet: ")
                                     append(selectedWallet?.name ?: "none")
-                                    if (selectedTag != null) {
+                                    if (selectedWalletIsDebt) {
+                                        append("  •  State: ")
+                                        append(if (transactionType == TransactionType.INCOME) "Paid" else "Unpaid")
+                                    } else if (selectedTag != null) {
                                         append("  •  Tag: ${selectedTag.emoji} ${selectedTag.name}")
                                     }
                                 },
@@ -353,28 +468,39 @@ fun TransactionsScreen(
                                     when {
                                         selectedWallet == null -> formMessage = "Select a wallet first."
                                         parsedAmount == null || parsedAmount <= 0 -> formMessage = "Enter a valid amount greater than zero."
-                                        selectedTag == null -> formMessage = "Create or select a tag first."
+                                        !selectedWalletIsDebt && selectedTag == null -> formMessage = "Create or select a tag first."
                                         else -> {
+                                            val descriptor = if (selectedWalletIsDebt) {
+                                                debtDescriptor(transactionType)
+                                            } else {
+                                                selectedTag!!.emoji to selectedTag.name
+                                            }
                                             onAddTransaction(
                                                 Transaction(
                                                     walletId = selectedWallet.id,
                                                     type = transactionType,
                                                     amount = parsedAmount,
-                                                    tagId = selectedTag.id,
-                                                    tagLabel = selectedTag.name,
-                                                    tagEmoji = selectedTag.emoji,
+                                                    tagId = if (selectedWalletIsDebt) null else selectedTag?.id,
+                                                    tagLabel = descriptor.second,
+                                                    tagEmoji = descriptor.first,
                                                     note = note.trim()
                                                 )
                                             )
                                             amount = ""
                                             note = ""
-                                            formMessage = "${transactionType.label} recorded successfully."
+                                            formMessage = "${descriptor.second} recorded successfully."
                                         }
                                     }
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Record ${transactionType.label}")
+                                Text(
+                                    if (selectedWalletIsDebt) {
+                                        "Record ${if (transactionType == TransactionType.INCOME) "Paid" else "Unpaid"}"
+                                    } else {
+                                        "Record ${transactionType.label}"
+                                    }
+                                )
                             }
 
                             if (formMessage.isNotEmpty()) {
@@ -435,8 +561,9 @@ fun TransactionsScreen(
     if (showCreateWalletDialog) {
         CreateWalletDialog(
             onDismiss = { showCreateWalletDialog = false },
-            onConfirm = { name, balance ->
-                onCreateWallet(name, balance)
+            onConfirm = { wallet ->
+                onCreateWallet(wallet)
+                selectedWalletId = wallet.id
                 showCreateWalletDialog = false
             }
         )
@@ -503,58 +630,195 @@ fun TransactionsScreen(
 }
 
 @Composable
+private fun WalletComparisonCard(
+    wallets: List<Wallet>,
+    transactions: List<Transaction>,
+    comparisonWalletId: String,
+    comparisonSourceWalletIds: List<String>,
+    onComparisonWalletSelected: (String) -> Unit,
+    onToggleComparisonSourceWallet: (String) -> Unit,
+) {
+    val sourceCandidates = remember(wallets) {
+        wallets.filter { it.kind == WalletKind.STANDARD && !it.isHidden }
+    }
+    val comparisonWallet = wallets.find { it.id == comparisonWalletId }
+    val selectedSources = wallets.filter { it.id in comparisonSourceWalletIds }
+    val sourceTotal = remember(selectedSources, transactions) {
+        selectedSources.sumOf { it.computeBalance(transactions) }
+    }
+    val subtractAmount = remember(comparisonWallet, transactions) {
+        comparisonWallet?.computeBalance(transactions)?.let(::abs) ?: 0.0
+    }
+    val result = sourceTotal - subtractAmount
+
+    SectionCard {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Wallets to subtract from",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (sourceCandidates.isEmpty()) {
+                    EmptyStateCard(
+                        title = "No visible standard wallets",
+                        subtitle = "Create a standard wallet or unhide one so the comparison has money to work with."
+                    )
+                } else {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(sourceCandidates, key = { it.id }) { wallet ->
+                            FilterChip(
+                                selected = comparisonSourceWalletIds.contains(wallet.id),
+                                onClick = { onToggleComparisonSourceWallet(wallet.id) },
+                                label = { Text(wallet.name) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "Subtract this wallet",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (wallets.isEmpty()) {
+                    Text(
+                        text = "No wallets available yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(wallets, key = { it.id }) { wallet ->
+                            FilterChip(
+                                selected = wallet.id == comparisonWalletId,
+                                onClick = { onComparisonWalletSelected(wallet.id) },
+                                label = { Text(walletComparisonLabel(wallet)) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    DetailRow("Available", formatPeso(sourceTotal))
+                    DetailRow(
+                        "Subtracting",
+                        if (comparisonWallet == null) "Choose a wallet" else formatPeso(subtractAmount)
+                    )
+                    DetailRow("Preview", formatPeso(result))
+                    Text(
+                        text = when {
+                            comparisonWallet == null -> "Choose a wallet to compare against your available wallets."
+                            comparisonWallet.kind == WalletKind.DEBT -> "Debt wallets stay out of automatic totals and this preview shows what paying that debt would leave you with."
+                            else -> "This preview subtracts the selected wallet balance from the wallets you marked as available."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun debtDescriptor(type: TransactionType): Pair<String, String> {
+    return if (type == TransactionType.INCOME) {
+        "✅" to "Paid"
+    } else {
+        "⏳" to "Unpaid"
+    }
+}
+
+private fun walletChipLabel(wallet: Wallet, balance: Double): String {
+    val status = when {
+        wallet.kind == WalletKind.DEBT -> "Debt"
+        wallet.isHidden -> "Hidden"
+        else -> null
+    }
+    return buildString {
+        append(wallet.name)
+        if (status != null) {
+            append(" • ")
+            append(status)
+        }
+        append("  ")
+        append(formatPeso(balance))
+    }
+}
+
+private fun walletComparisonLabel(wallet: Wallet): String {
+    return when {
+        wallet.kind == WalletKind.DEBT -> "${wallet.name} • Debt"
+        wallet.isHidden -> "${wallet.name} • Hidden"
+        else -> wallet.name
+    }
+}
+
+private fun walletSubtitle(wallet: Wallet): String {
+    return when {
+        wallet.kind == WalletKind.DEBT -> "Debt wallet. Paid entries reduce it, Unpaid entries increase it. Excluded from automatic totals. Tap to rename, edit, or delete it."
+        wallet.isAutoIncludedInTotals() -> "Included in automatic totals. Tap to rename, edit, hide, or delete it."
+        else -> "Hidden from automatic totals. Tap to rename, edit, unhide, or delete it."
+    }
+}
+
+@Composable
 private fun CreateWalletDialog(
     onDismiss: () -> Unit,
-    onConfirm: (String, Double) -> Unit,
+    onConfirm: (Wallet) -> Unit,
 ) {
     var name by rememberSaveable { mutableStateOf("") }
     var balance by rememberSaveable { mutableStateOf("0") }
-    var step by rememberSaveable { mutableIntStateOf(1) }
+    var kind by rememberSaveable { mutableStateOf(WalletKind.STANDARD) }
+    var isHidden by rememberSaveable { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (step == 1) "Name your wallet" else "Set initial balance") },
+        title = { Text("Create wallet") },
         text = {
-            if (step == 1) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Wallet name") },
-                    singleLine = true,
-                )
-            } else {
-                OutlinedTextField(
-                    value = balance,
-                    onValueChange = { balance = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Initial balance") },
-                    prefix = { Text(PESO_SIGN) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    singleLine = true,
-                )
-            }
+            WalletEditorFields(
+                name = name,
+                onNameChange = { name = it },
+                balance = balance,
+                onBalanceChange = { balance = it },
+                kind = kind,
+                onKindChange = { kind = it },
+                isHidden = isHidden,
+                onHiddenChange = { isHidden = it },
+            )
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (step == 1) {
-                        step = 2
-                    } else {
-                        onConfirm(name.trim(), balance.toDoubleOrNull() ?: 0.0)
-                    }
+                    onConfirm(
+                        Wallet(
+                            name = name.trim(),
+                            initialBalance = balance.toDoubleOrNull() ?: 0.0,
+                            isHidden = isHidden || kind == WalletKind.DEBT,
+                            kind = kind,
+                        )
+                    )
                 },
-                enabled = if (step == 1) name.isNotBlank() else balance.toDoubleOrNull() != null
+                enabled = name.isNotBlank() && balance.toDoubleOrNull() != null
             ) {
-                Text(if (step == 1) "Next" else "Create")
+                Text("Create")
             }
         },
         dismissButton = {
-            TextButton(onClick = {
-                if (step == 2) step = 1 else onDismiss()
-            }) {
-                Text(if (step == 2) "Back" else "Cancel")
-            }
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
 }
@@ -568,27 +832,23 @@ private fun EditWalletDialog(
 ) {
     var name by rememberSaveable(wallet.id) { mutableStateOf(wallet.name) }
     var balance by rememberSaveable(wallet.id) { mutableStateOf(wallet.initialBalance.toString()) }
+    var kind by rememberSaveable(wallet.id) { mutableStateOf(wallet.kind) }
+    var isHidden by rememberSaveable(wallet.id) { mutableStateOf(wallet.isHidden) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Edit wallet") },
+        title = { Text("Manage wallet") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Wallet name") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = balance,
-                    onValueChange = { balance = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Initial balance") },
-                    prefix = { Text(PESO_SIGN) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    singleLine = true,
+                WalletEditorFields(
+                    name = name,
+                    onNameChange = { name = it },
+                    balance = balance,
+                    onBalanceChange = { balance = it },
+                    kind = kind,
+                    onKindChange = { kind = it },
+                    isHidden = isHidden,
+                    onHiddenChange = { isHidden = it },
                 )
                 TextButton(onClick = onDelete) {
                     Text("Delete this wallet", color = MaterialTheme.colorScheme.error)
@@ -601,11 +861,13 @@ private fun EditWalletDialog(
                     onSave(
                         wallet.copy(
                             name = name.trim(),
-                            initialBalance = balance.toDoubleOrNull() ?: wallet.initialBalance
+                            initialBalance = balance.toDoubleOrNull() ?: wallet.initialBalance,
+                            isHidden = isHidden || kind == WalletKind.DEBT,
+                            kind = kind,
                         )
                     )
                 },
-                enabled = name.isNotBlank()
+                enabled = name.isNotBlank() && balance.toDoubleOrNull() != null
             ) {
                 Text("Save")
             }
@@ -614,6 +876,87 @@ private fun EditWalletDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+@Composable
+private fun WalletEditorFields(
+    name: String,
+    onNameChange: (String) -> Unit,
+    balance: String,
+    onBalanceChange: (String) -> Unit,
+    kind: WalletKind,
+    onKindChange: (WalletKind) -> Unit,
+    isHidden: Boolean,
+    onHiddenChange: (Boolean) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            value = name,
+            onValueChange = onNameChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Wallet name") },
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = balance,
+            onValueChange = onBalanceChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(if (kind == WalletKind.DEBT) "Starting debt" else "Initial balance") },
+            prefix = { Text(PESO_SIGN) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            singleLine = true,
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                text = "Wallet type",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = kind == WalletKind.STANDARD,
+                    onClick = { onKindChange(WalletKind.STANDARD) },
+                    label = { Text("Standard") }
+                )
+                FilterChip(
+                    selected = kind == WalletKind.DEBT,
+                    onClick = { onKindChange(WalletKind.DEBT) },
+                    label = { Text("Debt") }
+                )
+            }
+        }
+        FilterChip(
+            selected = isHidden || kind == WalletKind.DEBT,
+            onClick = { onHiddenChange(!isHidden) },
+            enabled = kind != WalletKind.DEBT,
+            label = {
+                Text(
+                    if (kind == WalletKind.DEBT) {
+                        "Hidden from automatic totals"
+                    } else {
+                        "Hide from automatic totals"
+                    }
+                )
+            }
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text(
+                text = if (kind == WalletKind.DEBT) {
+                    "Debt wallets are automatically kept out of the Home total and use Paid / Unpaid states instead of custom tags."
+                } else if (isHidden) {
+                    "Hidden wallets keep their own balance and transaction history, but they stay out of automatic total balance cards."
+                } else {
+                    "Visible wallets are included in the automatic balance total on Home."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+            )
+        }
+    }
 }
 
 @Composable
