@@ -53,7 +53,7 @@ enum class AppDestinations(
 ) {
     HOME("Home", Icons.Default.Home),
     DEBTS("Debts", Icons.Default.AccountBalanceWallet),
-    TRANSACTIONS("Transactions", Icons.Default.ReceiptLong),
+    TRANSACTIONS("Ledger", Icons.Default.ReceiptLong),
     REPORTS("Reports", Icons.Default.BarChart),
 }
 

@@ -80,7 +80,7 @@ fun TransactionsScreen(
 ) {
     var selectedWalletId by rememberSaveable { mutableStateOf(wallets.firstOrNull()?.id ?: "") }
     var selectedTagId by rememberSaveable { mutableStateOf("") }
-    var comparisonWalletId by rememberSaveable { mutableStateOf("") }
+    var comparisonWalletIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var comparisonSourceWalletIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var comparisonInitialized by rememberSaveable { mutableStateOf(false) }
 
@@ -88,31 +88,21 @@ fun TransactionsScreen(
         if (wallets.none { it.id == selectedWalletId }) {
             selectedWalletId = wallets.firstOrNull()?.id ?: ""
         }
-
-        val comparisonDefault = wallets.firstOrNull { it.kind == WalletKind.DEBT }?.id
-            ?: wallets.firstOrNull { it.isHidden }?.id
-            ?: wallets.firstOrNull()?.id
-
+        val defaultDebtIds = wallets.filter { it.kind == WalletKind.DEBT }.map { it.id }
         if (!comparisonInitialized && wallets.isNotEmpty()) {
-            comparisonWalletId = comparisonDefault.orEmpty()
+            comparisonWalletIds = defaultDebtIds.ifEmpty {
+                listOfNotNull(wallets.firstOrNull { it.isHidden }?.id)
+            }
             comparisonSourceWalletIds = wallets
-                .filter { it.kind == WalletKind.STANDARD && !it.isHidden && it.id != comparisonWalletId }
+                .filter { it.kind == WalletKind.STANDARD && !it.isHidden && it.id !in comparisonWalletIds }
                 .map { it.id }
             comparisonInitialized = true
         } else {
-            if (wallets.none { it.id == comparisonWalletId }) {
-                comparisonWalletId = comparisonDefault.orEmpty()
-            }
+            comparisonWalletIds = comparisonWalletIds.filter { id -> wallets.any { it.id == id } }
             comparisonSourceWalletIds = comparisonSourceWalletIds.filter { sourceId ->
                 wallets.any { it.id == sourceId && it.kind == WalletKind.STANDARD && !it.isHidden } &&
-                    sourceId != comparisonWalletId
+                    sourceId !in comparisonWalletIds
             }
-        }
-    }
-
-    LaunchedEffect(comparisonWalletId) {
-        if (comparisonWalletId.isNotEmpty() && comparisonSourceWalletIds.contains(comparisonWalletId)) {
-            comparisonSourceWalletIds = comparisonSourceWalletIds.filterNot { it == comparisonWalletId }
         }
     }
 
@@ -295,7 +285,7 @@ fun TransactionsScreen(
             item(key = "comparisonHeader") {
                 SectionHeader(
                     title = "Wallet comparison",
-                    caption = "Pick the wallets you count as available, then subtract one wallet from them. Hidden debt wallets fit here well."
+                    caption = "Select any wallets as your base, then pick any wallets to subtract. Both sides support multi-selection."
                 )
             }
 
@@ -303,15 +293,25 @@ fun TransactionsScreen(
                 WalletComparisonCard(
                     wallets = wallets,
                     transactions = transactions,
-                    comparisonWalletId = comparisonWalletId,
+                    comparisonWalletIds = comparisonWalletIds,
                     comparisonSourceWalletIds = comparisonSourceWalletIds,
-                    onComparisonWalletSelected = { comparisonWalletId = it },
+                    onToggleComparisonWallet = { walletId ->
+                        val updated = if (comparisonWalletIds.contains(walletId)) {
+                            comparisonWalletIds.filterNot { it == walletId }
+                        } else {
+                            comparisonWalletIds + walletId
+                        }
+                        comparisonWalletIds = updated
+                        comparisonSourceWalletIds = comparisonSourceWalletIds.filterNot { it in updated }
+                    },
                     onToggleComparisonSourceWallet = { walletId ->
-                        comparisonSourceWalletIds = if (comparisonSourceWalletIds.contains(walletId)) {
+                        val updated = if (comparisonSourceWalletIds.contains(walletId)) {
                             comparisonSourceWalletIds.filterNot { it == walletId }
                         } else {
                             comparisonSourceWalletIds + walletId
                         }
+                        comparisonSourceWalletIds = updated
+                        comparisonWalletIds = comparisonWalletIds.filterNot { it in updated }
                     }
                 )
             }
@@ -633,23 +633,24 @@ fun TransactionsScreen(
 private fun WalletComparisonCard(
     wallets: List<Wallet>,
     transactions: List<Transaction>,
-    comparisonWalletId: String,
+    comparisonWalletIds: List<String>,
     comparisonSourceWalletIds: List<String>,
-    onComparisonWalletSelected: (String) -> Unit,
+    onToggleComparisonWallet: (String) -> Unit,
     onToggleComparisonSourceWallet: (String) -> Unit,
 ) {
-    val sourceCandidates = remember(wallets) {
-        wallets.filter { it.kind == WalletKind.STANDARD && !it.isHidden }
+    val selectedSources = remember(wallets, comparisonSourceWalletIds) {
+        wallets.filter { it.id in comparisonSourceWalletIds }
     }
-    val comparisonWallet = wallets.find { it.id == comparisonWalletId }
-    val selectedSources = wallets.filter { it.id in comparisonSourceWalletIds }
+    val selectedSubtracts = remember(wallets, comparisonWalletIds) {
+        wallets.filter { it.id in comparisonWalletIds }
+    }
     val sourceTotal = remember(selectedSources, transactions) {
         selectedSources.sumOf { it.computeBalance(transactions) }
     }
-    val subtractAmount = remember(comparisonWallet, transactions) {
-        comparisonWallet?.computeBalance(transactions)?.let(::abs) ?: 0.0
+    val subtractTotal = remember(selectedSubtracts, transactions) {
+        selectedSubtracts.sumOf { abs(it.computeBalance(transactions)) }
     }
-    val result = sourceTotal - subtractAmount
+    val result = sourceTotal - subtractTotal
 
     SectionCard {
         Column(
@@ -658,18 +659,26 @@ private fun WalletComparisonCard(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Wallets to subtract from",
+                    text = "Base wallets",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
-                if (sourceCandidates.isEmpty()) {
+                Text(
+                    text = "Wallets whose real money you're counting. Multi-select.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (wallets.isEmpty()) {
                     EmptyStateCard(
-                        title = "No visible standard wallets",
-                        subtitle = "Create a standard wallet or unhide one so the comparison has money to work with."
+                        title = "No wallets yet",
+                        subtitle = "Create a wallet first."
                     )
                 } else {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(sourceCandidates, key = { it.id }) { wallet ->
+                        items(
+                            wallets.filter { it.id !in comparisonWalletIds },
+                            key = { it.id }
+                        ) { wallet ->
                             FilterChip(
                                 selected = comparisonSourceWalletIds.contains(wallet.id),
                                 onClick = { onToggleComparisonSourceWallet(wallet.id) },
@@ -682,9 +691,14 @@ private fun WalletComparisonCard(
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Subtract this wallet",
+                    text = "Wallets to subtract",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Debts, locked funds, or any wallet to deduct. Multi-select.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (wallets.isEmpty()) {
                     Text(
@@ -694,10 +708,13 @@ private fun WalletComparisonCard(
                     )
                 } else {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(wallets, key = { it.id }) { wallet ->
+                        items(
+                            wallets.filter { it.id !in comparisonSourceWalletIds },
+                            key = { it.id }
+                        ) { wallet ->
                             FilterChip(
-                                selected = wallet.id == comparisonWalletId,
-                                onClick = { onComparisonWalletSelected(wallet.id) },
+                                selected = wallet.id in comparisonWalletIds,
+                                onClick = { onToggleComparisonWallet(wallet.id) },
                                 label = { Text(walletComparisonLabel(wallet)) }
                             )
                         }
@@ -713,17 +730,17 @@ private fun WalletComparisonCard(
                     modifier = Modifier.padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    DetailRow("Available", formatPeso(sourceTotal))
+                    DetailRow("Base total", formatPeso(sourceTotal))
                     DetailRow(
                         "Subtracting",
-                        if (comparisonWallet == null) "Choose a wallet" else formatPeso(subtractAmount)
+                        if (comparisonWalletIds.isEmpty()) "None selected" else "${formatPeso(subtractTotal)} across ${comparisonWalletIds.size} wallet${if (comparisonWalletIds.size == 1) "" else "s"}"
                     )
                     DetailRow("Preview", formatPeso(result))
                     Text(
                         text = when {
-                            comparisonWallet == null -> "Choose a wallet to compare against your available wallets."
-                            comparisonWallet.kind == WalletKind.DEBT -> "Debt wallets stay out of automatic totals and this preview shows what paying that debt would leave you with."
-                            else -> "This preview subtracts the selected wallet balance from the wallets you marked as available."
+                            comparisonWalletIds.isEmpty() -> "Select wallets on the subtract side to see a preview."
+                            comparisonSourceWalletIds.isEmpty() -> "Select base wallets to calculate what would be left."
+                            else -> "After subtracting ${comparisonWalletIds.size} wallet${if (comparisonWalletIds.size == 1) "" else "s"} from ${comparisonSourceWalletIds.size} base wallet${if (comparisonSourceWalletIds.size == 1) "" else "s"}."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

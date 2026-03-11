@@ -13,14 +13,20 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
@@ -37,7 +43,11 @@ import com.codekokeshi.kokefinanceapp.ui.components.SectionCard
 import com.codekokeshi.kokefinanceapp.ui.components.StatCard
 import com.codekokeshi.kokefinanceapp.ui.components.TransactionListItem
 import com.codekokeshi.kokefinanceapp.ui.components.WalletBalanceCard
+import com.codekokeshi.kokefinanceapp.ui.components.formatPeso
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun HomeScreen(
@@ -95,6 +105,7 @@ fun HomeScreen(
     }
 
     val walletMap = remember(wallets) { wallets.associateBy { it.id } }
+    var showAllTransactions by remember { mutableStateOf(false) }
 
     AppScreenBackground {
         LazyColumn(
@@ -289,30 +300,28 @@ fun HomeScreen(
                 items(hiddenWallets.take(3), key = { it.id }) { wallet ->
                     val balance = remember(wallet, transactions) { wallet.computeBalance(transactions) }
                     SectionCard {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = wallet.name,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = if (wallet.kind == WalletKind.DEBT) {
-                                        "Debt wallet kept out of automatic totals"
-                                    } else {
-                                        "Hidden wallet kept out of automatic totals"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
                             Text(
-                                text = com.codekokeshi.kokefinanceapp.ui.components.formatPeso(balance),
+                                text = wallet.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (wallet.kind == WalletKind.DEBT) {
+                                    "Debt wallet kept out of automatic totals"
+                                } else {
+                                    "Hidden wallet kept out of automatic totals"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = formatPeso(balance),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
@@ -349,6 +358,137 @@ fun HomeScreen(
                     )
                 }
             }
+
+            if (transactions.isNotEmpty()) {
+                item(key = "viewAllButton") {
+                    OutlinedButton(
+                        onClick = { showAllTransactions = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("View all transaction history")
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAllTransactions) {
+        AllTransactionsDialog(
+            wallets = wallets,
+            transactions = transactions,
+            onDismiss = { showAllTransactions = false }
+        )
+    }
+}
+
+private sealed class TimelineEntry {
+    abstract val id: String
+    abstract val timestamp: Long
+
+    data class Tx(val transaction: Transaction) : TimelineEntry() {
+        override val id get() = "tx_${transaction.id}"
+        override val timestamp get() = transaction.timestamp
+    }
+
+    data class WalletCreated(val wallet: Wallet, override val timestamp: Long) : TimelineEntry() {
+        override val id get() = "created_${wallet.id}"
+    }
+}
+
+@Composable
+private fun AllTransactionsDialog(
+    wallets: List<Wallet>,
+    transactions: List<Transaction>,
+    onDismiss: () -> Unit,
+) {
+    val walletMap = remember(wallets) { wallets.associateBy { it.id } }
+    val timelineItems = remember(wallets, transactions) {
+        val items = mutableListOf<TimelineEntry>()
+        for (tx in transactions) items.add(TimelineEntry.Tx(tx))
+        for (wallet in wallets) {
+            val firstTxTs = transactions
+                .filter { it.walletId == wallet.id }
+                .minOfOrNull { it.timestamp }
+            val createdTs = if (firstTxTs != null && firstTxTs < wallet.createdAt) {
+                firstTxTs - 60_000L
+            } else {
+                wallet.createdAt
+            }
+            items.add(TimelineEntry.WalletCreated(wallet, createdTs))
+        }
+        items.sortedByDescending { it.timestamp }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Full history",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    TextButton(onClick = onDismiss) { Text("Close") }
+                }
+                LazyColumn(
+                    contentPadding = PaddingValues(start = 24.dp, top = 0.dp, end = 24.dp, bottom = 24.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(timelineItems, key = { it.id }) { entry ->
+                        when (entry) {
+                            is TimelineEntry.Tx -> TransactionListItem(
+                                transaction = entry.transaction,
+                                walletName = walletMap[entry.transaction.walletId]?.name ?: "Unknown"
+                            )
+                            is TimelineEntry.WalletCreated -> WalletCreationEntry(
+                                wallet = entry.wallet,
+                                timestamp = entry.timestamp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WalletCreationEntry(wallet: Wallet, timestamp: Long) {
+    val fmt = remember { SimpleDateFormat("MMM d, yyyy 'at' h:mm a", Locale.getDefault()) }
+    SectionCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "${wallet.name} Created",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Opening balance ${formatPeso(wallet.initialBalance)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = fmt.format(Date(timestamp)),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline
+            )
         }
     }
 }
