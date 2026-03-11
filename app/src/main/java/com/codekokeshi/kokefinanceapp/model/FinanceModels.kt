@@ -41,15 +41,23 @@ data class Transaction(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+fun Transaction.signedAmount(): Double {
+    return if (type == TransactionType.INCOME) amount else -amount
+}
+
+fun Wallet.computeBalance(netTransactionTotal: Double): Double {
+    return when (kind) {
+        WalletKind.STANDARD -> initialBalance + netTransactionTotal
+        WalletKind.DEBT -> initialBalance - netTransactionTotal
+    }
+}
+
 fun Wallet.computeBalance(transactions: List<Transaction>): Double {
     val transactionTotal = transactions
         .filter { it.walletId == id }
-        .sumOf { if (it.type == TransactionType.INCOME) it.amount else -it.amount }
+        .sumOf { it.signedAmount() }
 
-    return when (kind) {
-        WalletKind.STANDARD -> initialBalance + transactionTotal
-        WalletKind.DEBT -> initialBalance - transactionTotal
-    }
+    return computeBalance(transactionTotal)
 }
 
 fun Wallet.isAutoIncludedInTotals(): Boolean {
@@ -62,4 +70,16 @@ fun List<Wallet>.totalBalance(
 ): Double {
     return filter { includeHidden || it.isAutoIncludedInTotals() }
         .sumOf { it.computeBalance(transactions) }
+}
+
+fun List<Transaction>.netAmountByWallet(): Map<String, Double> {
+    return groupBy { it.walletId }
+        .mapValues { (_, walletTransactions) -> walletTransactions.sumOf { it.signedAmount() } }
+}
+
+fun List<Wallet>.balanceMap(transactions: List<Transaction>): Map<String, Double> {
+    val netByWallet = transactions.netAmountByWallet()
+    return associate { wallet ->
+        wallet.id to wallet.computeBalance(netByWallet[wallet.id] ?: 0.0)
+    }
 }

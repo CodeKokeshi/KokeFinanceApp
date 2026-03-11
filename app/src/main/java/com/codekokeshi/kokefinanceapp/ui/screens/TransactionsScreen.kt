@@ -47,6 +47,7 @@ import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
 import com.codekokeshi.kokefinanceapp.model.WalletKind
+import com.codekokeshi.kokefinanceapp.model.balanceMap
 import com.codekokeshi.kokefinanceapp.model.computeBalance
 import com.codekokeshi.kokefinanceapp.model.isAutoIncludedInTotals
 import com.codekokeshi.kokefinanceapp.ui.components.AppScreenBackground
@@ -64,7 +65,11 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
+
+private enum class LedgerSubsection(val label: String) {
+    RECENT_LOG("Recent log"),
+    FULL_HISTORY("Full history"),
+}
 
 @Composable
 fun TransactionsScreen(
@@ -80,29 +85,11 @@ fun TransactionsScreen(
 ) {
     var selectedWalletId by rememberSaveable { mutableStateOf(wallets.firstOrNull()?.id ?: "") }
     var selectedTagId by rememberSaveable { mutableStateOf("") }
-    var comparisonWalletIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    var comparisonSourceWalletIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
-    var comparisonInitialized by rememberSaveable { mutableStateOf(false) }
+    var ledgerSubsection by rememberSaveable { mutableStateOf(LedgerSubsection.RECENT_LOG) }
 
     LaunchedEffect(wallets) {
         if (wallets.none { it.id == selectedWalletId }) {
             selectedWalletId = wallets.firstOrNull()?.id ?: ""
-        }
-        val defaultDebtIds = wallets.filter { it.kind == WalletKind.DEBT }.map { it.id }
-        if (!comparisonInitialized && wallets.isNotEmpty()) {
-            comparisonWalletIds = defaultDebtIds.ifEmpty {
-                listOfNotNull(wallets.firstOrNull { it.isHidden }?.id)
-            }
-            comparisonSourceWalletIds = wallets
-                .filter { it.kind == WalletKind.STANDARD && !it.isHidden && it.id !in comparisonWalletIds }
-                .map { it.id }
-            comparisonInitialized = true
-        } else {
-            comparisonWalletIds = comparisonWalletIds.filter { id -> wallets.any { it.id == id } }
-            comparisonSourceWalletIds = comparisonSourceWalletIds.filter { sourceId ->
-                wallets.any { it.id == sourceId && it.kind == WalletKind.STANDARD && !it.isHidden } &&
-                    sourceId !in comparisonWalletIds
-            }
         }
     }
 
@@ -118,10 +105,11 @@ fun TransactionsScreen(
     var note by rememberSaveable { mutableStateOf("") }
     var formMessage by rememberSaveable { mutableStateOf("") }
 
+    val walletBalances = remember(wallets, transactions) { wallets.balanceMap(transactions) }
     val selectedWallet = wallets.find { it.id == selectedWalletId }
     val selectedWalletIsDebt = selectedWallet?.kind == WalletKind.DEBT
     val walletBalance = remember(selectedWallet, transactions) {
-        selectedWallet?.computeBalance(transactions) ?: 0.0
+        selectedWallet?.let { walletBalances[it.id] ?: 0.0 } ?: 0.0
     }
 
     val typeTags = remember(tags, transactionType, selectedWalletIsDebt) {
@@ -158,13 +146,20 @@ fun TransactionsScreen(
         dateFormat.format(cal.time)
     }
     val grouped = remember(filteredTransactions) {
-        filteredTransactions.groupBy { transaction ->
+        filteredTransactions.take(18).groupBy { transaction ->
             val dateStr = dateFormat.format(Date(transaction.timestamp))
             when (dateStr) {
                 today -> "Today"
                 yesterday -> "Yesterday"
                 else -> dateStr
             }
+        }
+    }
+    val fullTimelineItems = remember(wallets, transactions, ledgerSubsection) {
+        if (ledgerSubsection == LedgerSubsection.FULL_HISTORY) {
+            buildTimelineEntries(wallets = wallets, transactions = transactions)
+        } else {
+            emptyList()
         }
     }
 
@@ -196,7 +191,7 @@ fun TransactionsScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Manage wallets, hide balances from auto totals, and preview what debt would subtract from spendable money.",
+                        text = "Keep wallet preview and quick entry close, then open the ledger subsection you need only when you need it.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -214,7 +209,7 @@ fun TransactionsScreen(
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(wallets, key = { it.id }) { wallet ->
                         val isSelected = wallet.id == selectedWalletId
-                        val balance = remember(wallet, transactions) { wallet.computeBalance(transactions) }
+                        val balance = walletBalances[wallet.id] ?: 0.0
                         FilterChip(
                             selected = isSelected,
                             onClick = { selectedWalletId = wallet.id },
@@ -280,40 +275,6 @@ fun TransactionsScreen(
                         subtitle = "Create a wallet first, then record transactions against it."
                     )
                 }
-            }
-
-            item(key = "comparisonHeader") {
-                SectionHeader(
-                    title = "Wallet comparison",
-                    caption = "Select any wallets as your base, then pick any wallets to subtract. Both sides support multi-selection."
-                )
-            }
-
-            item(key = "comparisonCard") {
-                WalletComparisonCard(
-                    wallets = wallets,
-                    transactions = transactions,
-                    comparisonWalletIds = comparisonWalletIds,
-                    comparisonSourceWalletIds = comparisonSourceWalletIds,
-                    onToggleComparisonWallet = { walletId ->
-                        val updated = if (comparisonWalletIds.contains(walletId)) {
-                            comparisonWalletIds.filterNot { it == walletId }
-                        } else {
-                            comparisonWalletIds + walletId
-                        }
-                        comparisonWalletIds = updated
-                        comparisonSourceWalletIds = comparisonSourceWalletIds.filterNot { it in updated }
-                    },
-                    onToggleComparisonSourceWallet = { walletId ->
-                        val updated = if (comparisonSourceWalletIds.contains(walletId)) {
-                            comparisonSourceWalletIds.filterNot { it == walletId }
-                        } else {
-                            comparisonSourceWalletIds + walletId
-                        }
-                        comparisonSourceWalletIds = updated
-                        comparisonWalletIds = comparisonWalletIds.filterNot { it in updated }
-                    }
-                )
             }
 
             if (wallets.isNotEmpty()) {
@@ -523,12 +484,24 @@ fun TransactionsScreen(
 
             item(key = "historyHeader") {
                 SectionHeader(
-                    title = "History",
-                    caption = if (filteredTransactions.isEmpty()) "No entries yet." else "Tap an item to inspect or delete it."
+                    title = "Ledger subsections",
+                    caption = "Quick entry stays above. Open the lighter recent log or the full timeline when needed."
                 )
             }
 
-            if (filteredTransactions.isEmpty()) {
+            item(key = "historyModes") {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LedgerSubsection.entries.forEach { subsection ->
+                        FilterChip(
+                            selected = ledgerSubsection == subsection,
+                            onClick = { ledgerSubsection = subsection },
+                            label = { Text(subsection.label) }
+                        )
+                    }
+                }
+            }
+
+            if (ledgerSubsection == LedgerSubsection.RECENT_LOG && filteredTransactions.isEmpty()) {
                 item(key = "historyEmpty") {
                     EmptyStateCard(
                         title = "History is empty",
@@ -537,22 +510,54 @@ fun TransactionsScreen(
                 }
             }
 
-            grouped.forEach { (dateLabel, txns) ->
-                item(key = "date_$dateLabel") {
-                    SectionHeader(
-                        title = dateLabel,
-                        caption = "${txns.size} transaction${if (txns.size == 1) "" else "s"}"
+            if (ledgerSubsection == LedgerSubsection.RECENT_LOG) {
+                grouped.forEach { (dateLabel, txns) ->
+                    item(key = "date_$dateLabel") {
+                        SectionHeader(
+                            title = dateLabel,
+                            caption = buildString {
+                                append("${txns.size} transaction${if (txns.size == 1) "" else "s"}")
+                                if (filteredTransactions.size > txns.size || grouped.size > 1) {
+                                    append(" in the latest ${minOf(filteredTransactions.size, 18)} entries")
+                                }
+                            }
+                        )
+                    }
+                    items(txns, key = { it.id }) { transaction ->
+                        TransactionListItem(
+                            transaction = transaction,
+                            walletName = walletMap[transaction.walletId]?.name ?: "Unknown",
+                            modifier = Modifier.clickable {
+                                detailTransactionId = transaction.id
+                                showTransactionDetail = true
+                            }
+                        )
+                    }
+                }
+            } else if (fullTimelineItems.isEmpty()) {
+                item(key = "fullHistoryEmpty") {
+                    EmptyStateCard(
+                        title = "Nothing in the full timeline yet",
+                        subtitle = "Wallet creation events and transaction logs will show here once you start using the ledger."
                     )
                 }
-                items(txns, key = { it.id }) { transaction ->
-                    TransactionListItem(
-                        transaction = transaction,
-                        walletName = walletMap[transaction.walletId]?.name ?: "Unknown",
-                        modifier = Modifier.clickable {
-                            detailTransactionId = transaction.id
-                            showTransactionDetail = true
-                        }
-                    )
+            } else {
+                items(fullTimelineItems, key = { it.id }) { entry ->
+                    when (entry) {
+                        is TimelineEntry.Tx -> TransactionListItem(
+                            transaction = entry.transaction,
+                            walletName = walletMap[entry.transaction.walletId]?.name ?: "Unknown",
+                            modifier = Modifier.clickable {
+                                detailTransactionId = entry.transaction.id
+                                showTransactionDetail = true
+                            }
+                        )
+
+                        is TimelineEntry.WalletCreated -> WalletCreationEntry(
+                            wallet = entry.wallet,
+                            timestamp = entry.timestamp
+                        )
+                    }
                 }
             }
         }
@@ -629,128 +634,6 @@ fun TransactionsScreen(
     }
 }
 
-@Composable
-private fun WalletComparisonCard(
-    wallets: List<Wallet>,
-    transactions: List<Transaction>,
-    comparisonWalletIds: List<String>,
-    comparisonSourceWalletIds: List<String>,
-    onToggleComparisonWallet: (String) -> Unit,
-    onToggleComparisonSourceWallet: (String) -> Unit,
-) {
-    val selectedSources = remember(wallets, comparisonSourceWalletIds) {
-        wallets.filter { it.id in comparisonSourceWalletIds }
-    }
-    val selectedSubtracts = remember(wallets, comparisonWalletIds) {
-        wallets.filter { it.id in comparisonWalletIds }
-    }
-    val sourceTotal = remember(selectedSources, transactions) {
-        selectedSources.sumOf { it.computeBalance(transactions) }
-    }
-    val subtractTotal = remember(selectedSubtracts, transactions) {
-        selectedSubtracts.sumOf { abs(it.computeBalance(transactions)) }
-    }
-    val result = sourceTotal - subtractTotal
-
-    SectionCard {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Base wallets",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Wallets whose real money you're counting. Multi-select.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (wallets.isEmpty()) {
-                    EmptyStateCard(
-                        title = "No wallets yet",
-                        subtitle = "Create a wallet first."
-                    )
-                } else {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(
-                            wallets.filter { it.id !in comparisonWalletIds },
-                            key = { it.id }
-                        ) { wallet ->
-                            FilterChip(
-                                selected = comparisonSourceWalletIds.contains(wallet.id),
-                                onClick = { onToggleComparisonSourceWallet(wallet.id) },
-                                label = { Text(wallet.name) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Wallets to subtract",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Debts, locked funds, or any wallet to deduct. Multi-select.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (wallets.isEmpty()) {
-                    Text(
-                        text = "No wallets available yet.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(
-                            wallets.filter { it.id !in comparisonSourceWalletIds },
-                            key = { it.id }
-                        ) { wallet ->
-                            FilterChip(
-                                selected = wallet.id in comparisonWalletIds,
-                                onClick = { onToggleComparisonWallet(wallet.id) },
-                                label = { Text(walletComparisonLabel(wallet)) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    DetailRow("Base total", formatPeso(sourceTotal))
-                    DetailRow(
-                        "Subtracting",
-                        if (comparisonWalletIds.isEmpty()) "None selected" else "${formatPeso(subtractTotal)} across ${comparisonWalletIds.size} wallet${if (comparisonWalletIds.size == 1) "" else "s"}"
-                    )
-                    DetailRow("Preview", formatPeso(result))
-                    Text(
-                        text = when {
-                            comparisonWalletIds.isEmpty() -> "Select wallets on the subtract side to see a preview."
-                            comparisonSourceWalletIds.isEmpty() -> "Select base wallets to calculate what would be left."
-                            else -> "After subtracting ${comparisonWalletIds.size} wallet${if (comparisonWalletIds.size == 1) "" else "s"} from ${comparisonSourceWalletIds.size} base wallet${if (comparisonSourceWalletIds.size == 1) "" else "s"}."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-    }
-}
-
 private fun debtDescriptor(type: TransactionType): Pair<String, String> {
     return if (type == TransactionType.INCOME) {
         "✅" to "Paid"
@@ -776,12 +659,24 @@ private fun walletChipLabel(wallet: Wallet, balance: Double): String {
     }
 }
 
-private fun walletComparisonLabel(wallet: Wallet): String {
-    return when {
-        wallet.kind == WalletKind.DEBT -> "${wallet.name} • Debt"
-        wallet.isHidden -> "${wallet.name} • Hidden"
-        else -> wallet.name
+private fun buildTimelineEntries(
+    wallets: List<Wallet>,
+    transactions: List<Transaction>,
+): List<TimelineEntry> {
+    val items = mutableListOf<TimelineEntry>()
+    for (tx in transactions) items.add(TimelineEntry.Tx(tx))
+    for (wallet in wallets) {
+        val firstTxTs = transactions
+            .filter { it.walletId == wallet.id }
+            .minOfOrNull { it.timestamp }
+        val createdTs = if (firstTxTs != null && firstTxTs < wallet.createdAt) {
+            firstTxTs - 60_000L
+        } else {
+            wallet.createdAt
+        }
+        items.add(TimelineEntry.WalletCreated(wallet, createdTs))
     }
+    return items.sortedByDescending { it.timestamp }
 }
 
 private fun walletSubtitle(wallet: Wallet): String {

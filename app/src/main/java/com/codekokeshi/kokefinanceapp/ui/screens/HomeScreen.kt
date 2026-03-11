@@ -31,6 +31,7 @@ import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
 import com.codekokeshi.kokefinanceapp.model.WalletKind
+import com.codekokeshi.kokefinanceapp.model.balanceMap
 import com.codekokeshi.kokefinanceapp.model.computeBalance
 import com.codekokeshi.kokefinanceapp.model.isAutoIncludedInTotals
 import com.codekokeshi.kokefinanceapp.model.totalBalance
@@ -60,6 +61,7 @@ fun HomeScreen(
     val hiddenWallets = remember(wallets) { wallets.filterNot { it.isAutoIncludedInTotals() } }
     val debtWallets = remember(wallets) { wallets.filter { it.kind == WalletKind.DEBT } }
     val hiddenStandardWallets = remember(wallets) { wallets.filter { it.kind == WalletKind.STANDARD && it.isHidden } }
+    val walletBalances = remember(wallets, transactions) { wallets.balanceMap(transactions) }
 
     val totalBalance = remember(wallets, transactions) {
         wallets.totalBalance(transactions)
@@ -99,7 +101,7 @@ fun HomeScreen(
     }
 
     val topWallets = remember(autoWallets, transactions) {
-        autoWallets.map { it to it.computeBalance(transactions) }
+        autoWallets.map { wallet -> wallet to (walletBalances[wallet.id] ?: 0.0) }
             .sortedByDescending { it.second }
             .take(3)
     }
@@ -298,7 +300,7 @@ fun HomeScreen(
                 }
 
                 items(hiddenWallets.take(3), key = { it.id }) { wallet ->
-                    val balance = remember(wallet, transactions) { wallet.computeBalance(transactions) }
+                    val balance = walletBalances[wallet.id] ?: 0.0
                     SectionCard {
                         Column(
                             modifier = Modifier

@@ -7,15 +7,22 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -23,6 +30,7 @@ import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
 import com.codekokeshi.kokefinanceapp.model.WalletKind
+import com.codekokeshi.kokefinanceapp.model.balanceMap
 import com.codekokeshi.kokefinanceapp.model.computeBalance
 import com.codekokeshi.kokefinanceapp.model.isAutoIncludedInTotals
 import com.codekokeshi.kokefinanceapp.ui.components.AppScreenBackground
@@ -39,22 +47,52 @@ fun DebtScreen(
     transactions: List<Transaction>,
     onNavigateToTransactions: () -> Unit,
 ) {
+    val walletBalances = remember(wallets, transactions) { wallets.balanceMap(transactions) }
     val visibleWallets = remember(wallets) { wallets.filter { it.isAutoIncludedInTotals() } }
     val debtWallets = remember(wallets) { wallets.filter { it.kind == WalletKind.DEBT } }
     val hiddenStandardWallets = remember(wallets) {
         wallets.filter { it.kind == WalletKind.STANDARD && it.isHidden }
     }
+    var selectedVisibleWalletIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
+    var selectedDebtWalletIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
+
+    LaunchedEffect(visibleWallets, debtWallets) {
+        val visibleIds = visibleWallets.map { it.id }.toSet()
+        val debtIds = debtWallets.map { it.id }.toSet()
+        selectedVisibleWalletIds = if (selectedVisibleWalletIds.isEmpty()) {
+            visibleWallets.map { it.id }
+        } else {
+            selectedVisibleWalletIds.filter { it in visibleIds }
+        }
+        selectedDebtWalletIds = if (selectedDebtWalletIds.isEmpty()) {
+            debtWallets.map { it.id }
+        } else {
+            selectedDebtWalletIds.filter { it in debtIds }
+        }
+    }
 
     val visibleTotal = remember(visibleWallets, transactions) {
-        visibleWallets.sumOf { it.computeBalance(transactions) }
+        visibleWallets.sumOf { walletBalances[it.id] ?: 0.0 }
     }
     val debtTotal = remember(debtWallets, transactions) {
-        debtWallets.sumOf { it.computeBalance(transactions) }
+        debtWallets.sumOf { walletBalances[it.id] ?: 0.0 }
     }
     val lockedFundsTotal = remember(hiddenStandardWallets, transactions) {
-        hiddenStandardWallets.sumOf { it.computeBalance(transactions) }
+        hiddenStandardWallets.sumOf { walletBalances[it.id] ?: 0.0 }
     }
-    val spendableAfterDebt = visibleTotal - debtTotal
+    val selectedVisibleWallets = remember(visibleWallets, selectedVisibleWalletIds) {
+        visibleWallets.filter { it.id in selectedVisibleWalletIds }
+    }
+    val selectedDebtWallets = remember(debtWallets, selectedDebtWalletIds) {
+        debtWallets.filter { it.id in selectedDebtWalletIds }
+    }
+    val selectedVisibleTotal = remember(selectedVisibleWallets, walletBalances) {
+        selectedVisibleWallets.sumOf { walletBalances[it.id] ?: 0.0 }
+    }
+    val selectedDebtTotal = remember(selectedDebtWallets, walletBalances) {
+        selectedDebtWallets.sumOf { walletBalances[it.id] ?: 0.0 }
+    }
+    val spendableAfterDebt = selectedVisibleTotal - selectedDebtTotal
 
     AppScreenBackground {
         LazyColumn(
@@ -81,7 +119,7 @@ fun DebtScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "This screen keeps debt wallets and locked funds visible without mixing them into your automatic balance total.",
+                        text = "Pick which spendable wallets to count and which debt wallets to subtract. Locked funds stay separate by design.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -105,16 +143,114 @@ fun DebtScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = if (debtWallets.isEmpty()) {
-                                "No debt wallets yet. Hidden wallets can still stay off your main total."
+                            text = if (selectedDebtWallets.isEmpty()) {
+                                "No debt wallets selected. Locked funds remain below and never subtract from this figure."
                             } else {
-                                "Visible wallets minus remaining debt. Locked funds stay separate below."
+                                "Selected visible wallets minus selected debt wallets. Locked funds stay separate below."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         OutlinedButton(onClick = onNavigateToTransactions) {
-                            Text("Manage wallets and debt entries")
+                            Text("Manage wallets and debt logs")
+                        }
+                    }
+                }
+            }
+
+            item(key = "spendableSelector") {
+                SectionCard {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = "Spendable wallets",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Only visible standard wallets belong here. Locked funds do not.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (visibleWallets.isEmpty()) {
+                                Text(
+                                    text = "No visible wallets available.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(visibleWallets, key = { it.id }) { wallet ->
+                                        FilterChip(
+                                            selected = wallet.id in selectedVisibleWalletIds,
+                                            onClick = {
+                                                selectedVisibleWalletIds = toggleSelection(
+                                                    current = selectedVisibleWalletIds,
+                                                    walletId = wallet.id
+                                                )
+                                            },
+                                            label = { Text(wallet.name) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = "Debt wallets to subtract",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Select only the debt wallets you want counted against spendable money.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (debtWallets.isEmpty()) {
+                                Text(
+                                    text = "No debt wallets created yet.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(debtWallets, key = { it.id }) { wallet ->
+                                        FilterChip(
+                                            selected = wallet.id in selectedDebtWalletIds,
+                                            onClick = {
+                                                selectedDebtWalletIds = toggleSelection(
+                                                    current = selectedDebtWalletIds,
+                                                    walletId = wallet.id
+                                                )
+                                            },
+                                            label = { Text(wallet.name) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                DetailRow("Selected spendable", formatPeso(selectedVisibleTotal))
+                                DetailRow("Selected debt", formatPeso(selectedDebtTotal))
+                                DetailRow("Spendable after debt", formatPeso(spendableAfterDebt))
+                                Text(
+                                    text = "Locked funds are tracked below only. They are not part of this subtraction tool.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
@@ -284,5 +420,35 @@ private fun HiddenWalletCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+private fun toggleSelection(
+    current: List<String>,
+    walletId: String,
+): List<String> {
+    return if (walletId in current) {
+        current.filterNot { it == walletId }
+    } else {
+        current + walletId
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }

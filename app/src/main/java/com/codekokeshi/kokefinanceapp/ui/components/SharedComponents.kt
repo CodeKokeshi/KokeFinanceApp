@@ -157,8 +157,10 @@ fun TransactionListItem(
                 Column {
                     Text(
                         text = transaction.tagLabel,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Medium
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                     if (transaction.note.isNotBlank()) {
                         Text(

@@ -49,6 +49,7 @@ import com.codekokeshi.kokefinanceapp.model.Transaction
 import com.codekokeshi.kokefinanceapp.model.TransactionType
 import com.codekokeshi.kokefinanceapp.model.Wallet
 import com.codekokeshi.kokefinanceapp.model.WalletKind
+import com.codekokeshi.kokefinanceapp.model.balanceMap
 import com.codekokeshi.kokefinanceapp.model.computeBalance
 import com.codekokeshi.kokefinanceapp.model.isAutoIncludedInTotals
 import com.codekokeshi.kokefinanceapp.ui.components.AppScreenBackground
@@ -102,17 +103,35 @@ fun ReportsScreen(
             ReportPeriod.ALL_TIME -> transactions
         }
     }
-
-    val totalIncome = remember(filtered) {
-        filtered.filter { it.type == TransactionType.INCOME }.sumOf { it.amount }
+    val walletMap = remember(wallets) { wallets.associateBy { it.id } }
+    val walletBalances = remember(wallets, transactions) { wallets.balanceMap(transactions) }
+    val filteredStandardTransactions = remember(filtered, walletMap) {
+        filtered.filter { walletMap[it.walletId]?.kind != WalletKind.DEBT }
     }
-    val totalExpense = remember(filtered) {
-        filtered.filter { it.type == TransactionType.EXPENSE }.sumOf { it.amount }
+    val filteredDebtTransactions = remember(filtered, walletMap) {
+        filtered.filter { walletMap[it.walletId]?.kind == WalletKind.DEBT }
+    }
+
+    val totalIncome = remember(filteredStandardTransactions) {
+        filteredStandardTransactions.filter { it.type == TransactionType.INCOME }.sumOf { it.amount }
+    }
+    val totalExpense = remember(filteredStandardTransactions) {
+        filteredStandardTransactions.filter { it.type == TransactionType.EXPENSE }.sumOf { it.amount }
     }
     val net = totalIncome - totalExpense
+    val paidTotal = remember(filteredDebtTransactions) {
+        filteredDebtTransactions
+            .filter { it.tagLabel.equals("Paid", ignoreCase = true) || it.type == TransactionType.INCOME }
+            .sumOf { it.amount }
+    }
+    val unpaidTotal = remember(filteredDebtTransactions) {
+        filteredDebtTransactions
+            .filter { it.tagLabel.equals("Unpaid", ignoreCase = true) || it.type == TransactionType.EXPENSE }
+            .sumOf { it.amount }
+    }
 
-    val expenseByTag = remember(filtered) {
-        filtered.filter { it.type == TransactionType.EXPENSE }
+    val expenseByTag = remember(filteredStandardTransactions) {
+        filteredStandardTransactions.filter { it.type == TransactionType.EXPENSE }
             .groupBy { it.tagLabel to it.tagEmoji }
             .map { (key, txns) ->
                 TagBreakdown(
@@ -124,8 +143,8 @@ fun ReportsScreen(
             .sortedByDescending { it.amount }
     }
 
-    val incomeByTag = remember(filtered) {
-        filtered.filter { it.type == TransactionType.INCOME }
+    val incomeByTag = remember(filteredStandardTransactions) {
+        filteredStandardTransactions.filter { it.type == TransactionType.INCOME }
             .groupBy { it.tagLabel to it.tagEmoji }
             .map { (key, txns) ->
                 TagBreakdown(
@@ -136,8 +155,13 @@ fun ReportsScreen(
             }
             .sortedByDescending { it.amount }
     }
+    val debtByState = remember(filteredDebtTransactions) {
+        listOf(
+            TagBreakdown(label = "Paid", emoji = "", amount = paidTotal),
+            TagBreakdown(label = "Unpaid", emoji = "", amount = unpaidTotal),
+        ).filter { it.amount > 0.0 }
+    }
 
-    val walletMap = remember(wallets) { wallets.associateBy { it.id } }
     val tagCount = remember(tags) { tags.size.toDouble() }
     val transactionCount = remember(filtered) { filtered.size.toDouble() }
     val tagCountText = remember(tags) { tags.size.toString() }
@@ -251,6 +275,28 @@ fun ReportsScreen(
                 }
             }
 
+            if (debtByState.isNotEmpty()) {
+                item(key = "debtStateSummary") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        StatCard(
+                            label = "Paid",
+                            amount = paidTotal,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatCard(
+                            label = "Unpaid",
+                            amount = unpaidTotal,
+                            color = ExpenseColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
             item(key = "meta") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -305,6 +351,22 @@ fun ReportsScreen(
                 }
             }
 
+            if (debtByState.isNotEmpty()) {
+                item(key = "debtHeader") {
+                    SectionHeader(
+                        title = "Debt states",
+                        caption = "Paid and Unpaid stay separate from income and expense."
+                    )
+                }
+                items(debtByState, key = { "debt_${it.label}" }) { tag ->
+                    TagBreakdownItem(
+                        tag = tag,
+                        total = paidTotal + unpaidTotal,
+                        color = if (tag.label == "Paid") MaterialTheme.colorScheme.primary else ExpenseColor,
+                    )
+                }
+            }
+
             if (filtered.isEmpty()) {
                 item(key = "empty") {
                     EmptyStateCard(
@@ -326,7 +388,7 @@ fun ReportsScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Export as CSV for spreadsheets or as a formatted PDF report with wallet, tag, and transaction breakdowns.",
+                            text = "Export as CSV for spreadsheets or as a formatted PDF report that starts with wallet history and transaction logs before the breakdowns.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -346,14 +408,19 @@ fun ReportsScreen(
                             onClick = {
                                 pendingPdfData = generatePdf(
                                     period = period,
-                                    transactions = filtered,
+                                    periodTransactions = filtered,
+                                    allTransactions = transactions,
                                     wallets = wallets,
                                     walletMap = walletMap,
+                                    walletBalances = walletBalances,
                                     totalIncome = totalIncome,
                                     totalExpense = totalExpense,
                                     net = net,
+                                    paidTotal = paidTotal,
+                                    unpaidTotal = unpaidTotal,
                                     expenseByTag = expenseByTag,
                                     incomeByTag = incomeByTag,
+                                    debtByState = debtByState,
                                 )
                                 pdfLauncher.launch("koke_finance_report.pdf")
                             },
@@ -386,8 +453,13 @@ private fun TagBreakdownItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val label = remember(tag) {
+                    listOf(tag.emoji, tag.label)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ")
+                }
                 Text(
-                    text = "${tag.emoji} ${tag.label}",
+                    text = label,
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
@@ -435,14 +507,19 @@ private fun generateCsv(
 @Suppress("LongMethod")
 private fun generatePdf(
     period: ReportPeriod,
-    transactions: List<Transaction>,
+    periodTransactions: List<Transaction>,
+    allTransactions: List<Transaction>,
     wallets: List<Wallet>,
     walletMap: Map<String, Wallet>,
+    walletBalances: Map<String, Double>,
     totalIncome: Double,
     totalExpense: Double,
     net: Double,
+    paidTotal: Double,
+    unpaidTotal: Double,
     expenseByTag: List<TagBreakdown>,
     incomeByTag: List<TagBreakdown>,
+    debtByState: List<TagBreakdown>,
 ): ByteArray {
     val doc = PdfDocument()
     val pageW = 595
@@ -454,6 +531,7 @@ private fun generatePdf(
     val cAccent  = android.graphics.Color.parseColor("#4A90D9")
     val cIncome  = android.graphics.Color.parseColor("#27AE60")
     val cExpense = android.graphics.Color.parseColor("#E74C3C")
+    val cDebtPaid = android.graphics.Color.parseColor("#1D5C4A")
     val cText    = android.graphics.Color.parseColor("#1A1A1A")
     val cSub     = android.graphics.Color.parseColor("#777777")
     val cLine    = android.graphics.Color.parseColor("#DDDDDD")
@@ -487,6 +565,7 @@ private fun generatePdf(
     val pAmtR       = mkPaint(cText, 8f, bold = true, align = Paint.Align.RIGHT)
     val pAmtInR     = mkPaint(cIncome, 8f, bold = true, align = Paint.Align.RIGHT)
     val pAmtExR     = mkPaint(cExpense, 8f, bold = true, align = Paint.Align.RIGHT)
+    val pAmtDebtR   = mkPaint(cDebtPaid, 8f, bold = true, align = Paint.Align.RIGHT)
 
     val dfHeader = SimpleDateFormat("MMMM d, yyyy", Locale.getDefault())
     val dfRow    = SimpleDateFormat("MM/dd/yy HH:mm", Locale.getDefault())
@@ -524,6 +603,16 @@ private fun generatePdf(
 
     fun checkSpace(h: Float) { if (y + h > pageH - 44f) newPage() }
     fun sp(h: Float = 8f) { y += h }
+    fun fitText(text: String, maxWidth: Float, paint: Paint): String {
+        val safeText = text.ifBlank { "-" }
+        if (paint.measureText(safeText) <= maxWidth) return safeText
+        val ellipsis = "..."
+        var end = safeText.length
+        while (end > 0 && paint.measureText(safeText.take(end) + ellipsis) > maxWidth) {
+            end--
+        }
+        return if (end <= 0) ellipsis else safeText.take(end).trimEnd() + ellipsis
+    }
 
     fun sectionHeader(title: String) {
         sp(6f)
@@ -548,134 +637,157 @@ private fun generatePdf(
         y += 12f
     }
 
+    fun tableHeader(columns: List<Pair<Float, String>>) {
+        checkSpace(14f)
+        cv!!.drawRect(ml, y, ml + cw, y + 13f, pSecBg)
+        columns.forEach { (x, label) ->
+            cv!!.drawText(label, x, y + 9.5f, pBoldBody)
+        }
+        y += 15f
+    }
+
+    fun drawBreakdownRows(
+        rows: List<TagBreakdown>,
+        total: Double,
+        rightPaint: Paint,
+    ) {
+        rows.forEachIndexed { index, row ->
+            checkSpace(14f)
+            if (index % 2 == 1) cv!!.drawRect(ml, y, ml + cw, y + 12f, pRowAlt)
+            val fraction = if (total > 0) (row.amount / total) * 100 else 0.0
+            val labelText = listOf(row.emoji, row.label)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
+                .stripEmoji()
+            cv!!.drawText(fitText(labelText, cw * 0.64f, pBody), ml + 6f, y + 9f, pBody)
+            cv!!.drawText(
+                "${formatPeso(row.amount)}  ${fraction.toInt()}%",
+                ml + cw,
+                y + 9f,
+                rightPaint
+            )
+            y += 12f
+        }
+    }
+
     // ---- Start rendering ----
     newPage()
-
-    sectionHeader("Financial Summary")
-    sp(4f)
-    checkSpace(58f)
-    val boxW = (cw - 12f) / 3f
-
-    fun summaryBox(label: String, value: String, barColor: Int, ox: Float) {
-        val c = cv!!
-        val bx = ml + ox
-        c.drawRect(bx, y, bx + boxW, y + 52f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cSecBg })
-        c.drawRect(bx, y, bx + boxW, y + 3f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = barColor })
-        c.drawText(label, bx + boxW / 2f, y + 22f, mkPaint(cSub, 7f, align = Paint.Align.CENTER))
-        c.drawText(value, bx + boxW / 2f, y + 41f, mkPaint(barColor, 12f, bold = true, align = Paint.Align.CENTER))
-    }
-
-    val netColor = if (net >= 0) cIncome else cExpense
-    summaryBox("NET", formatPeso(net), netColor, 0f)
-    summaryBox("TOTAL INCOME", formatPeso(totalIncome), cIncome, boxW + 6f)
-    summaryBox("TOTAL EXPENSES", formatPeso(totalExpense), cExpense, (boxW + 6f) * 2f)
-    y += 58f
-
-    sp(4f)
-    checkSpace(13f)
-    cv!!.drawText("${transactions.size} transaction(s) in selected period", ml + 6f, y + 9f, pDim)
-    y += 16f
-
-    val activeWallets = wallets.filter { it.isAutoIncludedInTotals() }
-    if (activeWallets.isNotEmpty()) {
-        sectionHeader("Wallet Balances")
-        activeWallets.forEachIndexed { i, w ->
-            bodyRow(w.name.stripEmoji(), formatPeso(w.computeBalance(transactions)), altBg = i % 2 == 1)
-        }
-    }
-
-    val debtWallets = wallets.filter { it.kind == WalletKind.DEBT }
-    if (debtWallets.isNotEmpty()) {
-        sectionHeader("Debt Wallets (Remaining Balance)")
-        debtWallets.forEachIndexed { i, w ->
-            bodyRow(w.name.stripEmoji(), formatPeso(w.computeBalance(transactions)), altBg = i % 2 == 1)
-        }
-    }
-
-    val hiddenWallets = wallets.filter { it.isHidden && it.kind == WalletKind.STANDARD }
-    if (hiddenWallets.isNotEmpty()) {
-        sectionHeader("Off-Book Wallets")
-        hiddenWallets.forEachIndexed { i, w ->
-            bodyRow(w.name.stripEmoji(), formatPeso(w.computeBalance(transactions)), altBg = i % 2 == 1)
-        }
-    }
-
-    if (expenseByTag.isNotEmpty()) {
-        sectionHeader("Expense by Category")
-        val barMax = cw * 0.28f
-        expenseByTag.forEachIndexed { i, tag ->
-            checkSpace(16f)
-            val frac = if (totalExpense > 0) (tag.amount / totalExpense).toFloat().coerceIn(0f, 1f) else 0f
-            if (i % 2 == 1) cv!!.drawRect(ml, y, ml + cw, y + 15f, pRowAlt)
-            cv!!.drawText(tag.label.stripEmoji(), ml + 6f, y + 11f, pBody)
-            val barX = ml + cw * 0.52f
-            cv!!.drawRect(barX, y + 4f, barX + barMax, y + 11f,
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#F5D5D0") })
-            if (frac > 0f) cv!!.drawRect(barX, y + 4f, barX + barMax * frac, y + 11f,
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cExpense })
-            cv!!.drawText("${formatPeso(tag.amount)}  ${(frac * 100).toInt()}%", ml + cw, y + 11f, pAmtExR)
-            y += 15f
-        }
-    }
-
-    if (incomeByTag.isNotEmpty()) {
-        sectionHeader("Income by Category")
-        val barMax = cw * 0.28f
-        incomeByTag.forEachIndexed { i, tag ->
-            checkSpace(16f)
-            val frac = if (totalIncome > 0) (tag.amount / totalIncome).toFloat().coerceIn(0f, 1f) else 0f
-            if (i % 2 == 1) cv!!.drawRect(ml, y, ml + cw, y + 15f, pRowAlt)
-            cv!!.drawText(tag.label.stripEmoji(), ml + 6f, y + 11f, pBody)
-            val barX = ml + cw * 0.52f
-            cv!!.drawRect(barX, y + 4f, barX + barMax, y + 11f,
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.parseColor("#D0EDD8") })
-            if (frac > 0f) cv!!.drawRect(barX, y + 4f, barX + barMax * frac, y + 11f,
-                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cIncome })
-            cv!!.drawText("${formatPeso(tag.amount)}  ${(frac * 100).toInt()}%", ml + cw, y + 11f, pAmtInR)
-            y += 15f
-        }
-    }
-
-    sectionHeader("Full Transaction History")
-    val xDate = ml + 6f
-    val xType = ml + 82f
-    val xTag  = ml + 128f
-    val xAmtR = ml + 308f
-    val xWal  = ml + 316f
-
-    checkSpace(14f)
-    cv!!.drawRect(ml, y, ml + cw, y + 13f, pSecBg)
-    cv!!.drawText("DATE", xDate, y + 9.5f, pBoldBody)
-    cv!!.drawText("TYPE", xType, y + 9.5f, pBoldBody)
-    cv!!.drawText("CATEGORY", xTag, y + 9.5f, pBoldBody)
-    cv!!.drawText("AMOUNT", xAmtR, y + 9.5f, mkPaint(cText, 8f, bold = true, align = Paint.Align.RIGHT))
-    cv!!.drawText("WALLET", xWal, y + 9.5f, pBoldBody)
-    y += 15f
-
-    fun clip(s: String, max: Int) = if (s.length > max) s.take(max - 1) + "." else s
-
-    transactions.sortedByDescending { it.timestamp }.forEachIndexed { i, tx ->
+    sectionHeader("Wallet Registry")
+    tableHeader(
+        listOf(
+            ml + 6f to "CREATED",
+            ml + 92f to "WALLET",
+            ml + 250f to "TYPE",
+            ml + 314f to "OPENING",
+            ml + 396f to "CURRENT",
+        )
+    )
+    wallets.sortedBy { it.createdAt }.forEachIndexed { index, wallet ->
         checkSpace(12f)
-        if (i % 2 == 1) cv!!.drawRect(ml, y, ml + cw, y + 12f, pRowAlt)
-        val date    = dfRow.format(Date(tx.timestamp))
-        val type    = if (tx.type == TransactionType.INCOME) "Income" else "Expense"
-        val tagLbl  = clip(tx.tagLabel.stripEmoji(), 14)
-        val walletN = clip((walletMap[tx.walletId]?.name ?: "?").stripEmoji(), 22)
-        val amtStr  = if (tx.type == TransactionType.INCOME) "+${formatPeso(tx.amount)}"
-                      else "-${formatPeso(tx.amount)}"
-        val amtP    = if (tx.type == TransactionType.INCOME) pAmtInR else pAmtExR
-        cv!!.drawText(date, xDate, y + 9f, pBody)
-        cv!!.drawText(type, xType, y + 9f, pBody)
-        cv!!.drawText(tagLbl, xTag, y + 9f, pBody)
-        cv!!.drawText(amtStr, xAmtR, y + 9f, amtP)
-        cv!!.drawText(walletN, xWal, y + 9f, pBody)
+        if (index % 2 == 1) cv!!.drawRect(ml, y, ml + cw, y + 12f, pRowAlt)
+        cv!!.drawText(dfHeader.format(Date(wallet.createdAt)), ml + 6f, y + 9f, pBody)
+        cv!!.drawText(fitText(wallet.name.stripEmoji(), 150f, pBody), ml + 92f, y + 9f, pBody)
+        cv!!.drawText(wallet.kind.label.uppercase(Locale.getDefault()), ml + 250f, y + 9f, pBody)
+        cv!!.drawText(formatPeso(wallet.initialBalance), ml + 382f, y + 9f, pAmtR)
+        cv!!.drawText(formatPeso(walletBalances[wallet.id] ?: wallet.initialBalance), ml + cw, y + 9f, pAmtR)
         y += 12f
     }
 
-    if (transactions.isEmpty()) {
+    sectionHeader("Transaction Log")
+    tableHeader(
+        listOf(
+            ml + 6f to "DATE",
+            ml + 94f to "ENTRY",
+            ml + 152f to "LABEL",
+            ml + 388f to "AMOUNT",
+            ml + 404f to "WALLET",
+        )
+    )
+    periodTransactions.sortedByDescending { it.timestamp }.forEachIndexed { index, tx ->
+        val wallet = walletMap[tx.walletId]
+        val isDebtLog = wallet?.kind == WalletKind.DEBT
+        val entryLabel = when {
+            isDebtLog && tx.tagLabel.equals("Paid", ignoreCase = true) -> "Paid"
+            isDebtLog && tx.tagLabel.equals("Unpaid", ignoreCase = true) -> "Unpaid"
+            isDebtLog && tx.type == TransactionType.INCOME -> "Paid"
+            isDebtLog -> "Unpaid"
+            tx.type == TransactionType.INCOME -> "Income"
+            else -> "Expense"
+        }
+        val displayLabel = if (isDebtLog) {
+            "Debt log"
+        } else {
+            tx.tagLabel.stripEmoji()
+        }
+        val amountText = if (isDebtLog) {
+            formatPeso(tx.amount)
+        } else if (tx.type == TransactionType.INCOME) {
+            "+${formatPeso(tx.amount)}"
+        } else {
+            "-${formatPeso(tx.amount)}"
+        }
+        val amountPaint = when {
+            isDebtLog && entryLabel == "Paid" -> pAmtDebtR
+            isDebtLog -> pAmtExR
+            tx.type == TransactionType.INCOME -> pAmtInR
+            else -> pAmtExR
+        }
+        val noteText = tx.note.stripEmoji()
+        val rowHeight = if (noteText.isNotBlank()) 22f else 12f
+        checkSpace(rowHeight)
+        if (index % 2 == 1) cv!!.drawRect(ml, y, ml + cw, y + rowHeight, pRowAlt)
+        cv!!.drawText(dfRow.format(Date(tx.timestamp)), ml + 6f, y + 9f, pBody)
+        cv!!.drawText(entryLabel, ml + 94f, y + 9f, pBody)
+        cv!!.drawText(fitText(displayLabel, 228f, pBody), ml + 152f, y + 9f, pBody)
+        cv!!.drawText(amountText, ml + 388f, y + 9f, amountPaint)
+        cv!!.drawText(fitText((wallet?.name ?: "Unknown").stripEmoji(), 136f, pBody), ml + 404f, y + 9f, pBody)
+        if (noteText.isNotBlank()) {
+            cv!!.drawText(
+                fitText("Note: $noteText", cw - 16f, pDim),
+                ml + 10f,
+                y + 18f,
+                pDim
+            )
+        }
+        y += rowHeight
+    }
+
+    if (periodTransactions.isEmpty()) {
         checkSpace(13f)
         cv!!.drawText("No transactions in this period.", ml + 6f, y + 9f, pDim)
         y += 13f
+    }
+
+    sectionHeader("Financial Summary")
+    bodyRow("Net (standard wallets)", formatPeso(net), if (net >= 0) pAmtInR else pAmtExR)
+    bodyRow("Income", formatPeso(totalIncome), pAmtInR, altBg = true)
+    bodyRow("Expense", formatPeso(totalExpense), pAmtExR)
+    bodyRow("Paid", formatPeso(paidTotal), pAmtDebtR, altBg = true)
+    bodyRow("Unpaid", formatPeso(unpaidTotal), pAmtExR)
+    bodyRow("Entries in selected period", periodTransactions.size.toString(), pAmtR, altBg = true)
+    bodyRow("Wallets tracked", wallets.size.toString(), pAmtR)
+    checkSpace(12f)
+    cv!!.drawText(
+        "Wallet balances above use all recorded data. The transaction log follows the selected report period.",
+        ml + 6f,
+        y + 9f,
+        pDim
+    )
+    y += 13f
+
+    if (debtByState.isNotEmpty()) {
+        sectionHeader("Debt States")
+        drawBreakdownRows(debtByState, paidTotal + unpaidTotal, pAmtR)
+    }
+
+    if (expenseByTag.isNotEmpty()) {
+        sectionHeader("Expense Breakdown")
+        drawBreakdownRows(expenseByTag, totalExpense, pAmtExR)
+    }
+
+    if (incomeByTag.isNotEmpty()) {
+        sectionHeader("Income Breakdown")
+        drawBreakdownRows(incomeByTag, totalIncome, pAmtInR)
     }
 
     finishPage()
